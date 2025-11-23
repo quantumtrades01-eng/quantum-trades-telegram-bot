@@ -13,42 +13,20 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-# ----- Helper to format users for admin -----
-from telegram import User
 
-def format_user_for_admin(user: User) -> str:
-    """
-    Nicely format user info for admin messages.
-    If user has a username, use @username.
-    If no username, use a Telegram link instead.
-    """
-    if user.username:
-        return (
-            f"User: @{user.username}\n"
-            f"User ID: `{user.id}`"
-        )
-    else:
-        # Link usually works even if they have no username
-        return (
-            f"User: [Open Profile](tg://user?id={user.id}) (no username)\n"
-            f"User ID: `{user.id}`"
-        )
-
-# ================== CONFIG FROM ENV ==================
+# ================ CONFIG FROM ENV ==================
 BOT_TOKEN = os.environ["BOT_TOKEN"]              # from Render env
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"]) # your Telegram ID
 
 REFERRAL_LINK = os.environ["REFERRAL_LINK"]          # your Quotex ref link
 FREE_CHANNEL_LINK = os.environ["FREE_CHANNEL_LINK"]  # your free signals channel link
-VIP_CHANNEL_HANDLE = os.environ.get("VIP_CHANNEL_HANDLE", "@YourVipChannel")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")          # will be set on Render
-# ====================================================
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")          # set on Render
+# ===================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
-
 
 # ---------- Keyboards ----------
 def main_menu_keyboard():
@@ -103,22 +81,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message.text
 
-    # If user was asked to send ID
+    # If user was asked to send their Quotex ID
     if context.user_data.get("waiting_for_id"):
         context.user_data["waiting_for_id"] = False
 
+        # Notify admin (plain text -> no formatting errors)
         admin_text = (
-            "🔔 *New VIP Verification Request*\n\n"
+            "🔔 New VIP Verification Request\n\n"
             f"User: @{user.username or user.id}\n"
             f"User ID: {user.id}\n"
             f"Quotex ID (claimed, deposited >= $50): {msg}\n"
         )
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text=admin_text,
-            parse_mode="Markdown"
+            text=admin_text
         )
 
+        # Confirm to user
         reply = (
             "🔍 Your Quotex ID has been submitted for verification.\n\n"
             "We’ll verify your account and send your *VIP channel access* soon.\n"
@@ -127,14 +106,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply, parse_mode="Markdown", reply_markup=main_menu_keyboard())
         return
 
-    # Generic message → forward as lead + show menu
+    # Generic message path – treat as normal lead + show menu
     lead_text = (
-        "📩 *New Message Lead*\n\n"
+        "📩 New Message Lead\n\n"
         f"From: @{user.username or user.id}\n"
-        f"User ID: {user.id}\n"
+        f"User ID: {user.id}\n\n"
         f"Message:\n{msg}"
     )
-    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=lead_text, parse_mode="Markdown")
+    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=lead_text)
 
     reply = (
         f"Thanks for your message, {user.first_name} ✅\n\n"
@@ -182,7 +161,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "2️⃣ Deposit at least *$50* (recommended to follow VIP signals properly)\n"
             "3️⃣ Send us your *Quotex ID Number*\n"
             "4️⃣ We verify → You get *FREE VIP Access* (no extra fee to us)\n\n"
-            
         )
         await query.edit_message_text(text, reply_markup=how_it_works_keyboard(), parse_mode="Markdown")
 
@@ -244,12 +222,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
 
+        # Notify admin (plain text)
         admin_text = (
-            "⚠️ *Deposit Help Requested*\n\n"
-            f"User @{user.username or user.id} clicked 'Need Help With Deposit'.\n"
-            "Check their DM and handle manually (possible low-budget case)."
+            "⚠️ Deposit Help Requested\n\n"
+            f"User: @{user.username or user.id}\n"
+            f"User ID: {user.id}\n"
+            "Clicked 'Need Help With Deposit'. Possible low-budget case.\n"
         )
-        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text)
 
     # TALK TO EXPERT
     elif data == "talk_expert":
@@ -262,11 +242,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
 
         admin_text = (
-            "👤 *User Wants to Talk to Expert*\n\n"
-            f"User @{user.username or user.id} clicked 'Talk to Expert'.\n"
-            "Watch for their next message."
+            "👤 User Wants to Talk to Expert\n\n"
+            f"User: @{user.username or user.id}\n"
+            f"User ID: {user.id}\n"
+            "They clicked 'Talk to Expert'. Watch for their next message."
         )
-        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text)
 
 
 # ---------- MAIN ----------
@@ -277,7 +258,7 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # On Render we ALWAYS use webhook, because it expects a web server on PORT
+    # On Render we ALWAYS use webhook
     port = int(os.environ.get("PORT", "10000"))
     if not WEBHOOK_URL:
         raise RuntimeError("WEBHOOK_URL environment variable is not set")
@@ -292,5 +273,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
