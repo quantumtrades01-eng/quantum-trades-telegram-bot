@@ -13,6 +13,26 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+# ----- Helper to format users for admin -----
+from telegram import User
+
+def format_user_for_admin(user: User) -> str:
+    """
+    Nicely format user info for admin messages.
+    If user has a username, use @username.
+    If no username, use a Telegram link instead.
+    """
+    if user.username:
+        return (
+            f"User: @{user.username}\n"
+            f"User ID: `{user.id}`"
+        )
+    else:
+        # Link usually works even if they have no username
+        return (
+            f"User: [Open Profile](tg://user?id={user.id}) (no username)\n"
+            f"User ID: `{user.id}`"
+        )
 
 # ================== CONFIG FROM ENV ==================
 BOT_TOKEN = os.environ["BOT_TOKEN"]              # from Render env
@@ -272,4 +292,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
