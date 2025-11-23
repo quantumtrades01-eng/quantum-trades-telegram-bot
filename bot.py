@@ -1,5 +1,7 @@
 import os
 import logging
+from typing import Dict
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -28,7 +30,28 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# ---------- Keyboards ----------
+
+# ========= Helper: send admin notification + store relay mapping =========
+async def send_admin_notification(
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    user_id: int,
+    relay: bool = True,
+):
+    """
+    Send a message to ADMIN_CHAT_ID.
+    If relay=True, we store which user this admin message belongs to,
+    so admin can reply and bot will forward back to that user.
+    """
+    if relay:
+        msg = await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
+        relay_map: Dict[int, int] = context.application.bot_data.setdefault("relay_map", {})
+        relay_map[msg.message_id] = user_id
+    else:
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
+
+
+# ==================== Keyboards =====================
 def main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("📈 Free Signals Channel", callback_data="free_signals")],
@@ -63,10 +86,10 @@ def how_it_works_keyboard():
         [InlineKeyboardButton("📈 Go to Free Signals", callback_data="free_signals")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")],
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup(how_it_works_keyboard)
 
 
-# ---------- Handlers ----------
+# ==================== USER SIDE HANDLERS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = (
@@ -77,7 +100,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles messages coming from NORMAL USERS (not admin).
+    Includes:
+    - Quotex ID submission (after deposited_50)
+    - Normal text → send menu
+    - Forward to admin with relay mapping
+    """
     user = update.effective_user
     msg = update.message.text
 
@@ -85,17 +115,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("waiting_for_id"):
         context.user_data["waiting_for_id"] = False
 
-        # Notify admin (plain text -> no formatting errors)
+        # Notify admin with relay support (so you can reply)
         admin_text = (
             "🔔 New VIP Verification Request\n\n"
             f"User: @{user.username or user.id}\n"
             f"User ID: {user.id}\n"
-            f"Quotex ID (claimed, deposited >= $50): {msg}\n"
+            f"Quotex ID (claimed, deposited >= $50): {msg}\n\n"
+            "Reply to this message to answer this user directly."
         )
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=admin_text
-        )
+        await send_admin_notification(context, admin_text, user.id, relay=True)
 
         # Confirm to user
         reply = (
@@ -107,13 +135,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Generic message path – treat as normal lead + show menu
-    lead_text = (
+    admin_text = (
         "📩 New Message Lead\n\n"
         f"From: @{user.username or user.id}\n"
         f"User ID: {user.id}\n\n"
-        f"Message:\n{msg}"
+        f"Message:\n{msg}\n\n"
+        "Reply to this message to answer this user directly."
     )
-    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=lead_text)
+    await send_admin_notification(context, admin_text, user.id, relay=True)
 
     reply = (
         f"Thanks for your message, {user.first_name} ✅\n\n"
@@ -122,6 +151,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply, reply_markup=main_menu_keyboard())
 
 
+# ==================== ADMIN SIDE HANDLER (RELAY) ====================
+async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle messages sent by ADMIN_CHAT_ID.
+    If admin replies to a forwarded lead message, we send that reply back to the user.
+    """
+    msg = update.message
+    relay_map: Dict[int, int] = context.application.bot_data.setdefault("relay_map", {})
+
+    # Must be a reply to one of the bot's admin notifications
+    if not msg.reply_to_message:
+        await msg.reply_text(
+            "To reply to a user, please *reply to one of the lead messages* I sent you.",
+            parse_mode="Markdown",
+        )
+        return
+
+    target_user_id = relay_map.get(msg.reply_to_message.message_id)
+    if not target_user_id:
+        await msg.reply_text(
+            "I can't find which user this message belongs to.\n"
+            "Please reply directly under a lead notification message.",
+        )
+        return
+
+    # Forward admin's reply text to the target user
+    try:
+        await context.bot.send_message(
+            chat_id=target_user_id,
+            text=msg.text,
+        )
+        await msg.reply_text("✅ Sent to user.")
+    except Exception as e:
+        logging.exception("Failed to send admin reply to user")
+        await msg.reply_text(f"❌ Failed to send message to user: {e}")
+
+
+# ==================== BUTTON HANDLER ====================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -161,6 +228,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "2️⃣ Deposit at least *$50* (recommended to follow VIP signals properly)\n"
             "3️⃣ Send us your *Quotex ID Number*\n"
             "4️⃣ We verify → You get *FREE VIP Access* (no extra fee to us)\n\n"
+            "We earn commission directly from Quotex, so *you don’t pay us anything extra* "
+            "for VIP signals. It’s a pure *win–win* partnership 🤝\n\n"
+            "⚠ Trading involves risk. Only use money you can afford to trade."
         )
         await query.edit_message_text(text, reply_markup=how_it_works_keyboard(), parse_mode="Markdown")
 
@@ -222,14 +292,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
 
-        # Notify admin (plain text)
+        # Notify admin
         admin_text = (
             "⚠️ Deposit Help Requested\n\n"
             f"User: @{user.username or user.id}\n"
             f"User ID: {user.id}\n"
-            "Clicked 'Need Help With Deposit'. Possible low-budget case.\n"
+            "Clicked 'Need Help With Deposit'. Possible low-budget case.\n\n"
+            "Reply to this message to answer this user directly."
         )
-        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text)
+        await send_admin_notification(context, admin_text, user.id, relay=True)
 
     # TALK TO EXPERT
     elif data == "talk_expert":
@@ -245,18 +316,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👤 User Wants to Talk to Expert\n\n"
             f"User: @{user.username or user.id}\n"
             f"User ID: {user.id}\n"
-            "They clicked 'Talk to Expert'. Watch for their next message."
+            "They clicked 'Talk to Expert'. Watch for their next message.\n\n"
+            "Reply to this message to answer this user directly."
         )
-        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text)
+        await send_admin_notification(context, admin_text, user.id, relay=True)
 
 
-# ---------- MAIN ----------
+# ==================== MAIN ====================
+async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Single MessageHandler entry:
+    - If admin -> handle_admin_message
+    - If normal user -> handle_user_message
+    """
+    user = update.effective_user
+    if user.id == ADMIN_CHAT_ID:
+        await handle_admin_message(update, context)
+    else:
+        await handle_user_message(update, context)
+
+
 def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # init relay map
+    application.bot_data["relay_map"] = {}
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
     # On Render we ALWAYS use webhook
     port = int(os.environ.get("PORT", "10000"))
