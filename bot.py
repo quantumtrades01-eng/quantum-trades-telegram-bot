@@ -257,19 +257,19 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # If WEBHOOK_URL is set (Render), use webhook. Otherwise, polling (for local tests).
-    if WEBHOOK_URL:
-        port = int(os.environ.get("PORT", "10000"))
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=BOT_TOKEN,
-            webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
-        )
-    else:
-        # Local fallback (if you ever test on your own PC)
-        application.run_polling()
+    # On Render we ALWAYS use webhook, because it expects a web server on PORT
+    port = int(os.environ.get("PORT", "10000"))
+    if not WEBHOOK_URL:
+        raise RuntimeError("WEBHOOK_URL environment variable is not set")
+
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=BOT_TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+    )
 
 
 if __name__ == "__main__":
     main()
+
